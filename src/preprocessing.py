@@ -2,97 +2,159 @@
 # Funciones reutilizables de limpieza y transformación de datos.
 # Importar desde los notebooks con: from src.preprocessing import ...
 
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
 import math
-from typing import Sequence
+from typing import Optional, Sequence
 
-def get_numeric_columns(df: pd.DataFrame) -> list[str]:
-  """Obtiene los nombres de las columnas numéricas del DataFrame.
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
+from scipy.stats import chi2_contingency
 
-  Parameters:
-    df: DataFrame de entrada.
 
-  Returns:
-    Lista con nombres de columnas numéricas.
-  """
-  return df.select_dtypes(include=['number']).columns.tolist()
+def cramers_v(x: pd.Series, y: pd.Series) -> float:
+  """Calcula Cramér's V entre dos variables categóricas."""
+  valid = pd.DataFrame({'x': x, 'y': y}).dropna()
+  table = pd.crosstab(valid['x'], valid['y'])
+  if table.empty:
+    return 0.0
+
+  chi2 = chi2_contingency(table)[0]
+  observations = int(table.to_numpy().sum())
+  rows, columns = table.shape
+  denominator = observations * min(rows - 1, columns - 1)
+  if denominator <= 0:
+    return 0.0
+  return float(np.sqrt(chi2 / denominator))
+
+
+def get_boundaries_iqr(series: pd.Series) -> tuple[float, float]:
+  """Calcula los límites inferior y superior para detectar outliers con IQR."""
+  q1 = float(series.quantile(0.25))
+  q3 = float(series.quantile(0.75))
+  iqr = q3 - q1
+  return q1 - 1.5 * iqr, q3 + 1.5 * iqr
+
 
 def get_categorical_columns(df: pd.DataFrame) -> list[str]:
-  """Obtiene los nombres de las columnas categóricas del DataFrame.
+  """Obtiene nombres de columnas categóricas, incluyendo booleanas."""
+  return df.select_dtypes(include=['object', 'category', 'bool']).columns.tolist()
 
-  Parameters:
-    df: DataFrame de entrada.
+
+def get_categorical_target_associations(
+  df: pd.DataFrame,
+  target: str,
+  categorical_columns: Optional[Sequence[str]] = None
+) -> pd.Series:
+  """Calcula Cramér's V entre columnas categóricas y un objetivo categórico.
 
   Returns:
-    Lista con nombres de columnas categóricas.
+    Serie ordenada por asociación descendente.
   """
-  return df.select_dtypes(include=['object', 'category']).columns.tolist()
+  if target not in df.columns:
+    raise KeyError(f'La columna objetivo no existe: {target}')
+  columns = list(categorical_columns) if categorical_columns is not None else get_categorical_columns(df)
+  columns = [column for column in columns if column != target]
+  return pd.Series(
+    {column: cramers_v(df[column], df[target]) for column in columns},
+    name='cramers_v'
+  ).sort_values(ascending=False)
 
-def plot_numeric_histograms(
+
+def get_cramers_v_matrix(
   df: pd.DataFrame,
-  numeric_columns: Sequence[str],
-  fig_per_row: int = 4
-) -> None:
-  """Grafica histogramas para un conjunto de columnas numéricas.
+  categorical_columns: Optional[Sequence[str]] = None,
+  max_vars: Optional[int] = 20
+) -> pd.DataFrame:
+  """Calcula y devuelve la matriz de asociaciones de Cramér's V."""
+  columns = list(categorical_columns) if categorical_columns is not None else get_categorical_columns(df)
+  if max_vars is not None and len(columns) > max_vars:
+    columns = df[columns].nunique(dropna=True).sort_values(ascending=False).head(max_vars).index.tolist()
 
-  Parameters:
-    df: DataFrame de entrada.
-    numeric_columns: Secuencia con nombres de columnas numéricas a graficar.
-    fig_per_row: Cantidad de gráficos por fila.
-  """
-  n_cols = fig_per_row  # histogramas por fila
-  n_rows = math.ceil(len(numeric_columns) / n_cols)
-  size = (5 * n_cols, 4 * n_rows) if fig_per_row > 1 else (10, 8)
+  matrix = pd.DataFrame(index=columns, columns=columns, dtype=float)
+  for column_1 in columns:
+    for column_2 in columns:
+      matrix.loc[column_1, column_2] = cramers_v(df[column_1], df[column_2])
+  return matrix
 
-  fig, axes = plt.subplots(n_rows, n_cols, figsize=size)
-  axes = np.atleast_1d(axes).flatten()
 
-  for ax, col in zip(axes, numeric_columns):
-    sns.histplot(df[col], bins=30, kde=True, ax=ax)
-    ax.set_title('')
-    ax.set_xlabel(col)
-    ax.set_ylabel('Frecuencia')
+def get_numeric_columns(df: pd.DataFrame) -> list[str]:
+  """Obtiene nombres de columnas numéricas."""
+  return df.select_dtypes(include=['number']).columns.tolist()
 
-  # Ocultar ejes vacíos
-  for ax in axes[len(numeric_columns):]:
-    ax.set_visible(False)
 
-  plt.tight_layout()
-  plt.show()
-
-def plot_numeric_boxplots(
+def get_numeric_correlation_matrix(
   df: pd.DataFrame,
-  numeric_columns: Sequence[str],
-  fig_per_row: int = 4
-) -> None:
-  """Grafica diagramas de caja para un conjunto de columnas numéricas.
+  numeric_columns: Optional[Sequence[str]] = None,
+  method: str = 'pearson',
+  min_periods: int = 1
+) -> pd.DataFrame:
+  """Calcula una matriz numérica usando Pearson, Spearman o Kendall."""
+  valid_methods = {'pearson', 'spearman', 'kendall'}
+  if method not in valid_methods:
+    raise ValueError(f'method debe ser uno de {sorted(valid_methods)}')
+  if min_periods < 1:
+    raise ValueError('min_periods debe ser mayor o igual que 1')
+  columns = list(numeric_columns) if numeric_columns is not None else get_numeric_columns(df)
+  return df[columns].corr(method=method, min_periods=min_periods)
 
-  Parameters:
-    df: DataFrame de entrada.
-    numeric_columns: Secuencia con nombres de columnas numéricas a graficar.
-    fig_per_row: Cantidad de gráficos por fila.
+
+def get_numeric_target_correlations(
+  df: pd.DataFrame,
+  target: str,
+  numeric_columns: Optional[Sequence[str]] = None,
+  method: str = 'pearson'
+) -> pd.Series:
+  """Calcula correlaciones entre columnas numéricas y un objetivo numérico."""
+  if target not in df.columns:
+    raise KeyError(f'La columna objetivo no existe: {target}')
+  columns = list(numeric_columns) if numeric_columns is not None else get_numeric_columns(df)
+  columns = [column for column in columns if column != target]
+  matrix = get_numeric_correlation_matrix(df, columns + [target], method=method)
+  return matrix[target].drop(labels=target).sort_values(
+    key=lambda values: values.abs(), ascending=False
+  )
+
+
+def get_top_numeric_correlations(
+  correlation_matrix: pd.DataFrame,
+  threshold: float = 0.0,
+  top_n: Optional[int] = None,
+  absolute: bool = True
+) -> pd.DataFrame:
+  """Obtiene pares únicos de correlaciones que superan un umbral.
+
+  Returns:
+    DataFrame con variable_1, variable_2, correlation y absolute_correlation.
   """
-  n_cols = fig_per_row  # diagramas por fila
-  n_rows = math.ceil(len(numeric_columns) / n_cols)
-  size = (5 * n_cols, 4 * n_rows) if fig_per_row > 1 else (10, 8)
+  if not 0 <= threshold <= 1:
+    raise ValueError('threshold debe estar entre 0 y 1')
+  if not correlation_matrix.index.equals(correlation_matrix.columns):
+    raise ValueError('correlation_matrix debe tener el mismo índice y columnas')
+  if top_n is not None and top_n < 1:
+    raise ValueError('top_n debe ser mayor o igual que 1')
 
-  fig, axes = plt.subplots(n_rows, n_cols, figsize=size)
-  axes = np.atleast_1d(axes).flatten()
+  pairs: list[dict[str, object]] = []
+  for index, variable_1 in enumerate(correlation_matrix.index):
+    for variable_2 in correlation_matrix.columns[index + 1:]:
+      correlation = correlation_matrix.loc[variable_1, variable_2]
+      if pd.notna(correlation) and abs(float(correlation)) >= threshold:
+        pairs.append({
+          'variable_1': variable_1,
+          'variable_2': variable_2,
+          'correlation': float(correlation),
+          'absolute_correlation': abs(float(correlation))
+        })
 
-  for ax, col in zip(axes, numeric_columns):
-    sns.boxplot(x=df[col], ax=ax)
-    ax.set_title('')
-    ax.set_xlabel(col)
+  result = pd.DataFrame(pairs, columns=[
+    'variable_1', 'variable_2', 'correlation', 'absolute_correlation'
+  ])
+  if not result.empty:
+    result = result.sort_values(
+      'absolute_correlation' if absolute else 'correlation', ascending=False
+    )
+  return result.head(top_n).reset_index(drop=True) if top_n is not None else result.reset_index(drop=True)
 
-  # Ocultar ejes vacíos
-  for ax in axes[len(numeric_columns):]:
-    ax.set_visible(False)
-
-  plt.tight_layout()
-  plt.show()
 
 def plot_categorical_countplots(
   df: pd.DataFrame,
@@ -100,40 +162,104 @@ def plot_categorical_countplots(
   fig_per_row: int = 4,
   top_n: int = 15
 ) -> None:
-  """Grafica countplots para un conjunto de columnas categóricas.
-
-  Parameters:
-    df: DataFrame de entrada.
-    categorical_columns: Secuencia con nombres de columnas categóricas a graficar.
-    fig_per_row: Cantidad de gráficos por fila.
-    top_n: Número máximo de categorías a mostrar en cada gráfico.
-  """
-  n_cols = fig_per_row  # gráficos por fila
-  n_rows = math.ceil(len(categorical_columns) / n_cols)
+  """Grafica countplots para columnas categóricas."""
+  if fig_per_row < 1 or top_n < 1:
+    raise ValueError('fig_per_row y top_n deben ser mayores o iguales que 1')
+  n_cols = fig_per_row
+  n_rows = max(1, math.ceil(len(categorical_columns) / n_cols))
   size = (6.5 * n_cols, 4 * n_rows) if fig_per_row > 1 else (10, 8)
-
-  fig, axes = plt.subplots(n_rows, n_cols, figsize=size)
+  _, axes = plt.subplots(n_rows, n_cols, figsize=size)
   axes = np.atleast_1d(axes).flatten()
-
-  for ax, col in zip(axes, categorical_columns):
-    top_categories = df[col].value_counts().nlargest(top_n).index
-
-    x_label = f"{col} - ({top_n} de {df[col].nunique(dropna=True)})"
-    if df[col].nunique(dropna=True) <= top_n:
-      x_label = f"{col}"
-
-    sns.countplot(x=df[col], order=top_categories, ax=ax)
-    ax.set_title('')
-    ax.set_xlabel(x_label)
+  for ax, column in zip(axes, categorical_columns):
+    top_categories = df[column].value_counts().nlargest(top_n).index
+    label = column if df[column].nunique(dropna=True) <= top_n else f'{column} - ({top_n} de {df[column].nunique(dropna=True)})'
+    sns.countplot(x=df[column], order=top_categories, ax=ax)
+    ax.set_xlabel(label)
     ax.set_ylabel('Frecuencia')
     plt.setp(ax.get_xticklabels(), rotation=90)
-
-  # Ocultar ejes vacíos
   for ax in axes[len(categorical_columns):]:
     ax.set_visible(False)
-
   plt.tight_layout()
   plt.show()
+
+
+def plot_correlation_heatmap(
+  matrix: pd.DataFrame,
+  figsize: tuple[float, float] = (12, 10),
+  annot: Optional[bool] = None,
+  cmap: str = 'coolwarm',
+  vmin: float = -1,
+  vmax: float = 1,
+  cbar: bool = True,
+  square: bool = False,
+  mask_upper_triangle: bool = False,
+  fmt: str = '.2f',
+  xtick_rotation: int = 90,
+  ytick_rotation: int = 0
+) -> None:
+  """Grafica una matriz de correlación numérica configurable."""
+  if annot is None:
+    annot = len(matrix.columns) <= 15
+  mask = np.triu(np.ones_like(matrix, dtype=bool), k=1) if mask_upper_triangle else None
+  plt.figure(figsize=figsize)
+  sns.heatmap(matrix, annot=annot, fmt=fmt, cmap=cmap, vmin=vmin, vmax=vmax,
+              cbar=cbar, square=square, mask=mask)
+  plt.xticks(rotation=xtick_rotation)
+  plt.yticks(rotation=ytick_rotation)
+  plt.title('Matriz de correlación')
+  plt.tight_layout()
+  plt.show()
+
+
+def plot_cramers_v_heatmap(
+  matrix: pd.DataFrame,
+  figsize: tuple[float, float] = (14, 12),
+  annot: Optional[bool] = None,
+  cmap: str = 'coolwarm',
+  vmin: float = 0,
+  vmax: float = 1,
+  cbar: bool = True,
+  square: bool = False,
+  lower_triangle_only: bool = True,
+  fmt: str = '.2f',
+  xtick_rotation: int = 90,
+  ytick_rotation: int = 0
+) -> None:
+  """Grafica una matriz de Cramér's V previamente calculada."""
+  if annot is None:
+    annot = len(matrix.columns) <= 15
+  mask = np.triu(np.ones_like(matrix, dtype=bool), k=1) if lower_triangle_only else None
+  plt.figure(figsize=figsize)
+  sns.heatmap(matrix, annot=annot, fmt=fmt, cmap=cmap, vmin=vmin, vmax=vmax,
+              cbar=cbar, square=square, mask=mask)
+  plt.xticks(rotation=xtick_rotation)
+  plt.yticks(rotation=ytick_rotation)
+  plt.title("Matriz de asociación - Cramér's V")
+  plt.tight_layout()
+  plt.show()
+
+
+def plot_numeric_boxplots(
+  df: pd.DataFrame,
+  numeric_columns: Sequence[str],
+  fig_per_row: int = 4
+) -> None:
+  """Grafica diagramas de caja para columnas numéricas."""
+  if fig_per_row < 1:
+    raise ValueError('fig_per_row debe ser mayor o igual que 1')
+  n_cols = fig_per_row
+  n_rows = max(1, math.ceil(len(numeric_columns) / n_cols))
+  size = (5 * n_cols, 4 * n_rows) if fig_per_row > 1 else (10, 8)
+  _, axes = plt.subplots(n_rows, n_cols, figsize=size)
+  axes = np.atleast_1d(axes).flatten()
+  for ax, column in zip(axes, numeric_columns):
+    sns.boxplot(x=df[column], ax=ax)
+    ax.set_xlabel(column)
+  for ax in axes[len(numeric_columns):]:
+    ax.set_visible(False)
+  plt.tight_layout()
+  plt.show()
+
 
 def plot_numeric_boxplots_by_target(
   df: pd.DataFrame,
@@ -141,46 +267,49 @@ def plot_numeric_boxplots_by_target(
   numeric_columns: Sequence[str],
   fig_per_row: int = 4
 ) -> None:
-  """Grafica boxplots de columnas numéricas separados por una variable objetivo.
-
-  Parameters:
-    df: DataFrame de entrada.
-    target: Nombre de la columna objetivo para agrupar.
-    numeric_columns: Secuencia con nombres de columnas numéricas a graficar.
-    fig_per_row: Cantidad de gráficos por fila.
-  """
-  n_cols = fig_per_row  # diagramas por fila
-  n_rows = math.ceil(len(numeric_columns) / n_cols)
+  """Grafica boxplots numéricos separados por un objetivo categórico."""
+  if fig_per_row < 1:
+    raise ValueError('fig_per_row debe ser mayor o igual que 1')
+  missing_columns = [
+    column for column in [target, *numeric_columns] if column not in df.columns
+  ]
+  if missing_columns:
+    raise KeyError(f'Las columnas no existen en df: {missing_columns}')
+  n_cols = fig_per_row
+  n_rows = max(1, math.ceil(len(numeric_columns) / n_cols))
   size = (5 * n_cols, 4 * n_rows) if fig_per_row > 1 else (10, 8)
-
-  fig, axes = plt.subplots(n_rows, n_cols, figsize=size)
+  _, axes = plt.subplots(n_rows, n_cols, figsize=size)
   axes = np.atleast_1d(axes).flatten()
-
-  for ax, col in zip(axes, numeric_columns):
-    sns.boxplot(data=df, x=target, y=col, ax=ax)
-    ax.set_title('')
+  for ax, column in zip(axes, numeric_columns):
+    sns.boxplot(data=df, x=target, y=column, ax=ax)
     ax.set_xlabel(target)
-    ax.set_ylabel(col)
-
-  # Ocultar ejes vacíos
+    ax.set_ylabel(column)
   for ax in axes[len(numeric_columns):]:
     ax.set_visible(False)
-
   plt.tight_layout()
   plt.show()
 
-def get_boundaries_iqr(series: pd.Series) -> tuple[float, float]:
-  """Calcula los límites inferior y superior para detectar outliers usando el método IQR.
 
-  Parameters:
-    series: Serie numérica para calcular los límites.
-
-  Returns:
-    Tupla con (límite inferior, límite superior).
-  """
-  Q1 = series.quantile(0.25)
-  Q3 = series.quantile(0.75)
-  IQR = Q3 - Q1
-  lower_bound = Q1 - 1.5 * IQR
-  upper_bound = Q3 + 1.5 * IQR
-  return lower_bound, upper_bound
+def plot_numeric_histograms(
+  df: pd.DataFrame,
+  numeric_columns: Sequence[str],
+  fig_per_row: int = 4,
+  bins: int = 30,
+  kde: bool = True
+) -> None:
+  """Grafica histogramas para columnas numéricas."""
+  if fig_per_row < 1 or bins < 1:
+    raise ValueError('fig_per_row y bins deben ser mayores o iguales que 1')
+  n_cols = fig_per_row
+  n_rows = max(1, math.ceil(len(numeric_columns) / n_cols))
+  size = (5 * n_cols, 4 * n_rows) if fig_per_row > 1 else (10, 8)
+  _, axes = plt.subplots(n_rows, n_cols, figsize=size)
+  axes = np.atleast_1d(axes).flatten()
+  for ax, column in zip(axes, numeric_columns):
+    sns.histplot(df[column], bins=bins, kde=kde, ax=ax)
+    ax.set_xlabel(column)
+    ax.set_ylabel('Frecuencia')
+  for ax in axes[len(numeric_columns):]:
+    ax.set_visible(False)
+  plt.tight_layout()
+  plt.show()
