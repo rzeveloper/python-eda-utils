@@ -156,11 +156,47 @@ def get_top_numeric_correlations(
   return result.head(top_n).reset_index(drop=True) if top_n is not None else result.reset_index(drop=True)
 
 
+def get_top_categorical_correlations(
+  association_matrix: pd.DataFrame,
+  threshold: float = 0.0,
+  top_n: Optional[int] = None
+) -> pd.DataFrame:
+  """Obtiene pares únicos de asociaciones categóricas que superan un umbral."""
+  if not 0 <= threshold <= 1:
+    raise ValueError('threshold debe estar entre 0 y 1')
+  if not association_matrix.index.equals(association_matrix.columns):
+    raise ValueError('association_matrix debe tener el mismo índice y columnas')
+  if top_n is not None and top_n < 1:
+    raise ValueError('top_n debe ser mayor o igual que 1')
+
+  pairs: list[dict[str, object]] = []
+  for index, variable_1 in enumerate(association_matrix.index):
+    for variable_2 in association_matrix.columns[index + 1:]:
+      association = association_matrix.loc[variable_1, variable_2]
+      if pd.notna(association) and float(association) >= threshold:
+        pairs.append({
+          'variable_1': variable_1,
+          'variable_2': variable_2,
+          'association': float(association)
+        })
+
+  result = pd.DataFrame(pairs, columns=[
+    'variable_1', 'variable_2', 'association'
+  ])
+  if not result.empty:
+    result = result.sort_values('association', ascending=False)
+  return result.head(top_n).reset_index(drop=True) if top_n is not None else result.reset_index(drop=True)
+
+
+get_top_categorical_associations = get_top_categorical_correlations
+
+
 def plot_categorical_countplots(
   df: pd.DataFrame,
   categorical_columns: Sequence[str],
   fig_per_row: int = 4,
-  top_n: int = 15
+  top_n: int = 15,
+  title: Optional[str] = 'Distribución de variables categóricas'
 ) -> None:
   """Grafica countplots para columnas categóricas."""
   if fig_per_row < 1 or top_n < 1:
@@ -168,7 +204,7 @@ def plot_categorical_countplots(
   n_cols = fig_per_row
   n_rows = max(1, math.ceil(len(categorical_columns) / n_cols))
   size = (6.5 * n_cols, 4 * n_rows) if fig_per_row > 1 else (10, 8)
-  _, axes = plt.subplots(n_rows, n_cols, figsize=size)
+  figure, axes = plt.subplots(n_rows, n_cols, figsize=size)
   axes = np.atleast_1d(axes).flatten()
   for ax, column in zip(axes, categorical_columns):
     top_categories = df[column].value_counts().nlargest(top_n).index
@@ -179,6 +215,8 @@ def plot_categorical_countplots(
     plt.setp(ax.get_xticklabels(), rotation=90)
   for ax in axes[len(categorical_columns):]:
     ax.set_visible(False)
+  if title is not None:
+    figure.suptitle(title)
   plt.tight_layout()
   plt.show()
 
@@ -195,7 +233,8 @@ def plot_correlation_heatmap(
   mask_upper_triangle: bool = False,
   fmt: str = '.2f',
   xtick_rotation: int = 90,
-  ytick_rotation: int = 0
+  ytick_rotation: int = 0,
+  title: Optional[str] = 'Matriz de correlación'
 ) -> None:
   """Grafica una matriz de correlación numérica configurable."""
   if annot is None:
@@ -206,7 +245,8 @@ def plot_correlation_heatmap(
               cbar=cbar, square=square, mask=mask)
   plt.xticks(rotation=xtick_rotation)
   plt.yticks(rotation=ytick_rotation)
-  plt.title('Matriz de correlación')
+  if title is not None:
+    plt.title(title)
   plt.tight_layout()
   plt.show()
 
@@ -223,7 +263,8 @@ def plot_cramers_v_heatmap(
   lower_triangle_only: bool = True,
   fmt: str = '.2f',
   xtick_rotation: int = 90,
-  ytick_rotation: int = 0
+  ytick_rotation: int = 0,
+  title: Optional[str] = "Matriz de asociación - Cramér's V"
 ) -> None:
   """Grafica una matriz de Cramér's V previamente calculada."""
   if annot is None:
@@ -234,7 +275,8 @@ def plot_cramers_v_heatmap(
               cbar=cbar, square=square, mask=mask)
   plt.xticks(rotation=xtick_rotation)
   plt.yticks(rotation=ytick_rotation)
-  plt.title("Matriz de asociación - Cramér's V")
+  if title is not None:
+    plt.title(title)
   plt.tight_layout()
   plt.show()
 
@@ -242,7 +284,8 @@ def plot_cramers_v_heatmap(
 def plot_numeric_boxplots(
   df: pd.DataFrame,
   numeric_columns: Sequence[str],
-  fig_per_row: int = 4
+  fig_per_row: int = 4,
+  title: Optional[str] = 'Diagramas de caja'
 ) -> None:
   """Grafica diagramas de caja para columnas numéricas."""
   if fig_per_row < 1:
@@ -250,13 +293,15 @@ def plot_numeric_boxplots(
   n_cols = fig_per_row
   n_rows = max(1, math.ceil(len(numeric_columns) / n_cols))
   size = (5 * n_cols, 4 * n_rows) if fig_per_row > 1 else (10, 8)
-  _, axes = plt.subplots(n_rows, n_cols, figsize=size)
+  figure, axes = plt.subplots(n_rows, n_cols, figsize=size)
   axes = np.atleast_1d(axes).flatten()
   for ax, column in zip(axes, numeric_columns):
     sns.boxplot(x=df[column], ax=ax)
     ax.set_xlabel(column)
   for ax in axes[len(numeric_columns):]:
     ax.set_visible(False)
+  if title is not None:
+    figure.suptitle(title)
   plt.tight_layout()
   plt.show()
 
@@ -265,7 +310,8 @@ def plot_numeric_boxplots_by_target(
   df: pd.DataFrame,
   target: str,
   numeric_columns: Sequence[str],
-  fig_per_row: int = 4
+  fig_per_row: int = 4,
+  title: Optional[str] = 'Diagramas de caja por objetivo'
 ) -> None:
   """Grafica boxplots numéricos separados por un objetivo categórico."""
   if fig_per_row < 1:
@@ -278,7 +324,7 @@ def plot_numeric_boxplots_by_target(
   n_cols = fig_per_row
   n_rows = max(1, math.ceil(len(numeric_columns) / n_cols))
   size = (5 * n_cols, 4 * n_rows) if fig_per_row > 1 else (10, 8)
-  _, axes = plt.subplots(n_rows, n_cols, figsize=size)
+  figure, axes = plt.subplots(n_rows, n_cols, figsize=size)
   axes = np.atleast_1d(axes).flatten()
   for ax, column in zip(axes, numeric_columns):
     sns.boxplot(data=df, x=target, y=column, ax=ax)
@@ -286,6 +332,8 @@ def plot_numeric_boxplots_by_target(
     ax.set_ylabel(column)
   for ax in axes[len(numeric_columns):]:
     ax.set_visible(False)
+  if title is not None:
+    figure.suptitle(title)
   plt.tight_layout()
   plt.show()
 
@@ -295,7 +343,8 @@ def plot_numeric_histograms(
   numeric_columns: Sequence[str],
   fig_per_row: int = 4,
   bins: int = 30,
-  kde: bool = True
+  kde: bool = True,
+  title: Optional[str] = 'Distribución de variables numéricas'
 ) -> None:
   """Grafica histogramas para columnas numéricas."""
   if fig_per_row < 1 or bins < 1:
@@ -303,7 +352,7 @@ def plot_numeric_histograms(
   n_cols = fig_per_row
   n_rows = max(1, math.ceil(len(numeric_columns) / n_cols))
   size = (5 * n_cols, 4 * n_rows) if fig_per_row > 1 else (10, 8)
-  _, axes = plt.subplots(n_rows, n_cols, figsize=size)
+  figure, axes = plt.subplots(n_rows, n_cols, figsize=size)
   axes = np.atleast_1d(axes).flatten()
   for ax, column in zip(axes, numeric_columns):
     sns.histplot(df[column], bins=bins, kde=kde, ax=ax)
@@ -311,5 +360,7 @@ def plot_numeric_histograms(
     ax.set_ylabel('Frecuencia')
   for ax in axes[len(numeric_columns):]:
     ax.set_visible(False)
+  if title is not None:
+    figure.suptitle(title)
   plt.tight_layout()
   plt.show()
