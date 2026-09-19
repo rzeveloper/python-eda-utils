@@ -196,11 +196,19 @@ def plot_categorical_countplots(
   categorical_columns: Sequence[str],
   fig_per_row: int = 4,
   top_n: int = 15,
-  title: Optional[str] = 'Distribución de variables categóricas'
+  title: Optional[str] = 'Distribución de variables categóricas',
+  max_label_length: Optional[int] = 30,
+  label_rotation: int = 90
 ) -> None:
-  """Grafica countplots para columnas categóricas."""
+  """Grafica countplots para columnas categóricas.
+
+  ``max_label_length`` recorta únicamente el texto mostrado en el eje; los
+  valores completos se mantienen para calcular los conteos.
+  """
   if fig_per_row < 1 or top_n < 1:
     raise ValueError('fig_per_row y top_n deben ser mayores o iguales que 1')
+  if max_label_length is not None and max_label_length < 1:
+    raise ValueError('max_label_length debe ser mayor o igual que 1 o None')
   n_cols = fig_per_row
   n_rows = max(1, math.ceil(len(categorical_columns) / n_cols))
   size = (6.5 * n_cols, 4 * n_rows) if fig_per_row > 1 else (10, 8)
@@ -212,7 +220,16 @@ def plot_categorical_countplots(
     sns.countplot(x=df[column], order=top_categories, ax=ax)
     ax.set_xlabel(label)
     ax.set_ylabel('Frecuencia')
-    plt.setp(ax.get_xticklabels(), rotation=90)
+    if max_label_length is not None:
+      labels = [
+        label.get_text() if len(label.get_text()) <= max_label_length else (
+          f'{label.get_text()[:max_label_length - 3]}...'
+          if max_label_length >= 3 else label.get_text()[:max_label_length]
+        )
+        for label in ax.get_xticklabels()
+      ]
+      ax.set_xticklabels(labels)
+    plt.setp(ax.get_xticklabels(), rotation=label_rotation)
   for ax in axes[len(categorical_columns):]:
     ax.set_visible(False)
   if title is not None:
@@ -292,7 +309,7 @@ def plot_numeric_boxplots(
     raise ValueError('fig_per_row debe ser mayor o igual que 1')
   n_cols = fig_per_row
   n_rows = max(1, math.ceil(len(numeric_columns) / n_cols))
-  size = (5 * n_cols, 4 * n_rows) if fig_per_row > 1 else (10, 8)
+  size = (5 * n_cols, 4 * n_rows) if fig_per_row > 1 else (8, 6)
   figure, axes = plt.subplots(n_rows, n_cols, figsize=size)
   axes = np.atleast_1d(axes).flatten()
   for ax, column in zip(axes, numeric_columns):
@@ -351,7 +368,7 @@ def plot_numeric_histograms(
     raise ValueError('fig_per_row y bins deben ser mayores o iguales que 1')
   n_cols = fig_per_row
   n_rows = max(1, math.ceil(len(numeric_columns) / n_cols))
-  size = (5 * n_cols, 4 * n_rows) if fig_per_row > 1 else (10, 8)
+  size = (5 * n_cols, 4 * n_rows) if fig_per_row > 1 else (8, 6)
   figure, axes = plt.subplots(n_rows, n_cols, figsize=size)
   axes = np.atleast_1d(axes).flatten()
   for ax, column in zip(axes, numeric_columns):
