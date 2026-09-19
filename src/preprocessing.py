@@ -228,6 +228,7 @@ def plot_categorical_countplots(
         )
         for label in ax.get_xticklabels()
       ]
+      ax.set_xticks(range(len(labels)))
       ax.set_xticklabels(labels)
     plt.setp(ax.get_xticklabels(), rotation=label_rotation)
   for ax in axes[len(categorical_columns):]:
